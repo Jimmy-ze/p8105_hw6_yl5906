@@ -1,0 +1,331 @@
+---
+title: "Homework 6"
+author: "Yujie Li"
+date: "2025-11-24"
+output: github_document
+---
+
+```{r setup, include = FALSE}
+library(tidyverse)
+library(modelr)
+library(p8105.datasets)
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  fig.width = 8,
+  fig.asp = .6,
+  out.width = "90%"
+)
+
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+```
+
+## Problem 1
+
+### Load and clean the data
+```{r}
+# Read the homicide data
+homicide_df = 
+  read_csv("homicide-data.csv") |> 
+  janitor::clean_names()
+
+# Create city_state variable, solved variable, and filter data
+homicide_df = 
+  homicide_df |> 
+  mutate(
+    city_state = str_c(city, ", ", state),
+    solved = as.numeric(disposition == "Closed by arrest")
+  ) |> 
+  filter(!city_state %in% c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO", "Tulsa, AL")) |> 
+  filter(victim_race %in% c("White", "Black")) |> 
+  mutate(victim_age = as.numeric(victim_age)) |> 
+  drop_na(victim_age)
+```
+
+The dataset contains `r nrow(homicide_df)` homicides from `r homicide_df |> pull(city_state) |> unique() |> length()` cities. After filtering for cities reporting victim race and limiting to White or Black victims, we have data on resolved (`solved = 1`) and unresolved (`solved = 0`) cases.
+
+### Baltimore, MD analysis
+```{r}
+# Filter for Baltimore and fit logistic regression
+baltimore_df = 
+  homicide_df |> 
+  filter(city_state == "Baltimore, MD")
+
+# Fit the logistic regression model
+baltimore_fit = 
+  glm(solved ~ victim_age + victim_sex + victim_race, 
+      data = baltimore_df, 
+      family = binomial())
+
+# Get odds ratio and CI for male victims
+baltimore_or = 
+  baltimore_fit |> 
+  broom::tidy() |> 
+  mutate(
+    OR = exp(estimate),
+    CI_lower = exp(estimate - 1.96 * std.error),
+    CI_upper = exp(estimate + 1.96 * std.error)
+  ) |> 
+  filter(term == "victim_sexMale") |> 
+  select(term, OR, CI_lower, CI_upper)
+
+baltimore_or |> 
+  knitr::kable(digits = 3)
+```
+
+For Baltimore, MD, the adjusted odds ratio for solving homicides comparing male victims to female victims is `r baltimore_or |> pull(OR) |> round(3)` (95% CI: `r baltimore_or |> pull(CI_lower) |> round(3)`, `r baltimore_or |> pull(CI_upper) |> round(3)`), keeping all other variables fixed. This suggests that homicides with male victims are significantly less likely to be resolved than those with female victims.
+
+### Analysis for all cities
+```{r}
+# Function to fit logistic regression
+fit_logistic = function(df) {
+  glm(solved ~ victim_age + victim_sex + victim_race, 
+      data = df, 
+      family = binomial())
+}
+
+# Fit models for all cities
+all_cities_results = 
+  homicide_df |> 
+  nest(data = -city_state) |> 
+  mutate(
+    fits = map(data, fit_logistic),
+    results = map(fits, broom::tidy)
+  ) |> 
+  select(city_state, results) |> 
+  unnest(results) |> 
+  mutate(
+    OR = exp(estimate),
+    CI_lower = exp(estimate - 1.96 * std.error),
+    CI_upper = exp(estimate + 1.96 * std.error)
+  ) |> 
+  filter(term == "victim_sexMale") |> 
+  select(city_state, OR, CI_lower, CI_upper)
+
+all_cities_results |> 
+  knitr::kable(digits = 3)
+```
+
+### Plot of odds ratios by city
+```{r}
+# Create plot of ORs and CIs by city
+all_cities_results |> 
+  mutate(city_state = fct_reorder(city_state, OR)) |> 
+  ggplot(aes(x = city_state, y = OR)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper)) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  labs(
+    title = "Adjusted Odds Ratios for Solving Homicides: Male vs Female Victims",
+    x = "City",
+    y = "Adjusted Odds Ratio (95% CI)",
+    caption = "Adjusted for victim age and race"
+  ) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+```
+
+The plot shows that most cities have odds ratios below 1, indicating homicides with male victims are less likely to be solved than those with female victims. `r all_cities_results |> filter(OR == min(OR)) |> pull(city_state)` has the lowest OR at `r all_cities_results |> pull(OR) |> min() |> round(3)`, while `r all_cities_results |> filter(OR == max(OR)) |> pull(city_state)` has the highest at `r all_cities_results |> pull(OR) |> max() |> round(3)`.
+
+
+## Problem 2
+
+### Load Central Park weather data
+```{r}
+data("weather_df")
+weather_df = 
+  weather_df |> 
+  filter(name == "CentralPark_NY") |> 
+  select(tmax, tmin, prcp)
+```
+
+### Bootstrap analysis
+```{r}
+set.seed(1)
+
+# Function to perform bootstrap
+boot_sample = function(df) {
+  sample_frac(df, replace = TRUE)
+}
+
+# Generate 5000 bootstrap samples and fit models
+bootstrap_results = 
+  tibble(bootstrap_id = 1:5000) |> 
+  mutate(
+    sample = map(bootstrap_id, ~boot_sample(weather_df)),
+    fits = map(sample, \(df) lm(tmax ~ tmin + prcp, data = df)),
+    tidy_results = map(fits, broom::tidy),
+    glance_results = map(fits, broom::glance)
+  )
+```
+
+### Extract r-squared and log(beta1 * beta2)
+```{r}
+# Extract quantities of interest
+bootstrap_estimates = 
+  bootstrap_results |> 
+  mutate(
+    r_squared = map_dbl(glance_results, ~pull(.x, r.squared)),
+    beta1 = map_dbl(tidy_results, ~filter(.x, term == "tmin") |> pull(estimate)),
+    beta2 = map_dbl(tidy_results, ~filter(.x, term == "prcp") |> pull(estimate)),
+    log_beta_product = log(beta1 * beta2)
+  ) |> 
+  select(bootstrap_id, r_squared, log_beta_product)
+```
+
+### Distribution plots
+```{r}
+# Plot r-squared distribution
+bootstrap_estimates |> 
+  ggplot(aes(x = r_squared)) +
+  geom_density(fill = "lightblue", alpha = 0.5) +
+  labs(
+    title = "Distribution of Bootstrap R-squared",
+    x = "R-squared",
+    y = "Density"
+  )
+
+# Plot log(beta1 * beta2) distribution
+bootstrap_estimates |> 
+  drop_na(log_beta_product) |> 
+  ggplot(aes(x = log_beta_product)) +
+  geom_density(fill = "lightgreen", alpha = 0.5) +
+  labs(
+    title = "Distribution of log(β₁ × β₂)",
+    x = "log(β₁ × β₂)",
+    y = "Density"
+  )
+```
+
+### 95% confidence intervals
+```{r}
+# Calculate CIs
+ci_r_squared = quantile(bootstrap_estimates$r_squared, c(0.025, 0.975))
+ci_log_beta = quantile(bootstrap_estimates$log_beta_product, c(0.025, 0.975), na.rm = TRUE)
+
+# Display results
+tibble(
+  Quantity = c("R-squared", "log(β₁ × β₂)"),
+  CI_Lower = c(ci_r_squared[1], ci_log_beta[1]),
+  CI_Upper = c(ci_r_squared[2], ci_log_beta[2])
+) |> 
+  knitr::kable(digits = 3)
+```
+
+The $\hat{r}^2$ distribution is approximately normal with mean `r mean(bootstrap_estimates$r_squared) |> round(3)` and 95% CI (`r ci_r_squared[1] |> round(3)`, `r ci_r_squared[2] |> round(3)`). The $\log(\hat{\beta}_1 \times \hat{\beta}_2)$ distribution is left-skewed with `r sum(is.na(bootstrap_estimates$log_beta_product))` NA values due to negative products, and 95% CI (`r ci_log_beta[1] |> round(3)`, `r ci_log_beta[2] |> round(3)`).
+
+
+## Problem 3
+
+### Load and clean birthweight data
+```{r}
+# Read birthweight data
+birthweight_df = 
+  read_csv("birthweight.csv") |> 
+  janitor::clean_names() |> 
+  mutate(
+    babysex = factor(babysex, levels = c(1, 2), labels = c("male", "female")),
+    frace = factor(frace, levels = c(1, 2, 3, 4, 8, 9), 
+                   labels = c("white", "black", "asian", "puerto rican", "other", "unknown")),
+    mrace = factor(mrace, levels = c(1, 2, 3, 4, 8), 
+                   labels = c("white", "black", "asian", "puerto rican", "other")),
+    malform = factor(malform, levels = c(0, 1), labels = c("absent", "present"))
+  )
+
+# Check for missing data
+birthweight_df |> 
+  summarize(across(everything(), ~sum(is.na(.))))
+```
+
+### Propose my regression model
+
+I propose a model based on biological and health-related factors that are hypothesized to influence birthweight:
+
+- `gaweeks`: gestational age (more weeks = higher birthweight)
+- `bhead`, `blength`: physical measurements at birth (directly related to size/weight)
+- `delwt`, `wtgain`: mother's weight and weight gain (nutritional factors)
+- `smoken`: smoking during pregnancy (known risk factor)
+- `mrace`: mother's race (potential biological/environmental differences)
+```{r}
+# Fit my proposed model
+my_model = lm(bwt ~ gaweeks + bhead + blength + delwt + wtgain + smoken + mrace, 
+              data = birthweight_df)
+
+# Show model summary
+my_model |> 
+  broom::tidy() |> 
+  knitr::kable(digits = 3)
+```
+
+### Model diagnostics plot
+```{r}
+# Plot residuals vs fitted values
+birthweight_df |> 
+  add_predictions(my_model) |> 
+  add_residuals(my_model) |> 
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point(alpha = 0.3) +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Residuals vs Fitted Values",
+    x = "Fitted Values",
+    y = "Residuals"
+  )
+```
+
+The residual plot shows relatively random scatter around zero, though there are some outliers with large negative residuals (underpredicted birthweights).
+
+### Compare models using cross-validation
+```{r}
+# Create cross-validation dataframe
+cv_df = 
+  crossv_mc(birthweight_df, n = 100) |> 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  )
+
+# Fit models and calculate RMSE
+cv_df = 
+  cv_df |> 
+  mutate(
+    my_model = map(train, \(df) lm(bwt ~ gaweeks + bhead + blength + delwt + wtgain + smoken + mrace, data = df)),
+    main_effects = map(train, \(df) lm(bwt ~ blength + gaweeks, data = df)),
+    interaction = map(train, \(df) lm(bwt ~ bhead * blength * babysex, data = df))
+  ) |> 
+  mutate(
+    rmse_my_model = map2_dbl(my_model, test, rmse),
+    rmse_main = map2_dbl(main_effects, test, rmse),
+    rmse_interaction = map2_dbl(interaction, test, rmse)
+  )
+```
+
+### Plot RMSE comparison
+```{r}
+# Compare models
+cv_df |> 
+  select(starts_with("rmse")) |> 
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    values_to = "rmse",
+    names_prefix = "rmse_"
+  ) |> 
+  ggplot(aes(x = model, y = rmse)) +
+  geom_violin() +
+  labs(
+    title = "Cross-Validation RMSE Comparison",
+    x = "Model",
+    y = "RMSE"
+  )
+```
+
+Based on cross-validation, my proposed model has the lowest RMSE (`r cv_df |> pull(rmse_my_model) |> mean() |> round(2)`), followed by the interaction model (`r cv_df |> pull(rmse_interaction) |> mean() |> round(2)`), and the main effects model has the highest RMSE (`r cv_df |> pull(rmse_main) |> mean() |> round(2)`). This suggests my model provides better predictive accuracy by incorporating more relevant biological and health factors.
