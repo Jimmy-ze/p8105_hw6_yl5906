@@ -4,7 +4,6 @@ author: "Yujie Li"
 date: "2025-11-24"
 output: github_document
 ---
-
 ```{r setup, include = FALSE}
 library(tidyverse)
 library(modelr)
@@ -13,6 +12,7 @@ library(p8105.datasets)
 knitr::opts_chunk$set(
   echo = TRUE,
   warning = FALSE,
+  message = FALSE,
   fig.width = 8,
   fig.asp = .6,
   out.width = "90%"
@@ -33,14 +33,10 @@ scale_fill_discrete = scale_fill_viridis_d
 
 ### Load and clean the data
 ```{r}
-# Read the homicide data
+#homicide data
 homicide_df = 
-  read_csv("homicide-data.csv") |> 
-  janitor::clean_names()
-
-# Create city_state variable, solved variable, and filter data
-homicide_df = 
-  homicide_df |> 
+  read_csv("data/homicide-data.csv") |> 
+  janitor::clean_names() |> 
   mutate(
     city_state = str_c(city, ", ", state),
     solved = as.numeric(disposition == "Closed by arrest")
@@ -51,22 +47,22 @@ homicide_df =
   drop_na(victim_age)
 ```
 
-The dataset contains `r nrow(homicide_df)` homicides from `r homicide_df |> pull(city_state) |> unique() |> length()` cities. After filtering for cities reporting victim race and limiting to White or Black victims, we have data on resolved (`solved = 1`) and unresolved (`solved = 0`) cases.
+The dataset contains `r nrow(homicide_df)` homicides from `r homicide_df |> pull(city_state) |> n_distinct()` cities. After filtering for cities reporting victim race and limiting to White or Black victims, we have data on resolved (`solved = 1`) and unresolved (`solved = 0`) cases.
 
 ### Baltimore, MD analysis
 ```{r}
-# Filter for Baltimore and fit logistic regression
+#Filter for baltimore and fit logistic regression
 baltimore_df = 
   homicide_df |> 
   filter(city_state == "Baltimore, MD")
 
-# Fit the logistic regression model
+#Fit logistic regression
 baltimore_fit = 
   glm(solved ~ victim_age + victim_sex + victim_race, 
       data = baltimore_df, 
       family = binomial())
 
-# Get odds ratio and CI for male victims
+#OR and CI for male victims
 baltimore_or = 
   baltimore_fit |> 
   broom::tidy() |> 
@@ -86,19 +82,13 @@ For Baltimore, MD, the adjusted odds ratio for solving homicides comparing male 
 
 ### Analysis for all cities
 ```{r}
-# Function to fit logistic regression
-fit_logistic = function(df) {
-  glm(solved ~ victim_age + victim_sex + victim_race, 
-      data = df, 
-      family = binomial())
-}
-
-# Fit models for all cities
+#all cities model
 all_cities_results = 
   homicide_df |> 
   nest(data = -city_state) |> 
   mutate(
-    fits = map(data, fit_logistic),
+    fits = map(data, \(df) glm(solved ~ victim_age + victim_sex + victim_race, 
+                                 data = df, family = binomial())),
     results = map(fits, broom::tidy)
   ) |> 
   select(city_state, results) |> 
@@ -117,7 +107,7 @@ all_cities_results |>
 
 ### Plot of odds ratios by city
 ```{r}
-# Create plot of ORs and CIs by city
+#Create plot of ORs and CIs by city
 all_cities_results |> 
   mutate(city_state = fct_reorder(city_state, OR)) |> 
   ggplot(aes(x = city_state, y = OR)) +
@@ -135,12 +125,12 @@ all_cities_results |>
 
 The plot shows that most cities have odds ratios below 1, indicating homicides with male victims are less likely to be solved than those with female victims. `r all_cities_results |> filter(OR == min(OR)) |> pull(city_state)` has the lowest OR at `r all_cities_results |> pull(OR) |> min() |> round(3)`, while `r all_cities_results |> filter(OR == max(OR)) |> pull(city_state)` has the highest at `r all_cities_results |> pull(OR) |> max() |> round(3)`.
 
-
 ## Problem 2
 
 ### Load Central Park weather data
 ```{r}
 data("weather_df")
+
 weather_df = 
   weather_df |> 
   filter(name == "CentralPark_NY") |> 
@@ -149,33 +139,25 @@ weather_df =
 
 ### Bootstrap analysis
 ```{r}
-set.seed(1)
+set.seed(327)
 
-# Function to perform bootstrap
-boot_sample = function(df) {
-  sample_frac(df, replace = TRUE)
-}
-
-# Generate 5000 bootstrap samples and fit models
+#5000 bootstrap sample and fit models
 bootstrap_results = 
   tibble(bootstrap_id = 1:5000) |> 
   mutate(
-    sample = map(bootstrap_id, ~boot_sample(weather_df)),
+    sample = map(bootstrap_id, \(i) sample_frac(weather_df, replace = TRUE)),
     fits = map(sample, \(df) lm(tmax ~ tmin + prcp, data = df)),
     tidy_results = map(fits, broom::tidy),
     glance_results = map(fits, broom::glance)
   )
-```
 
-### Extract r-squared and log(beta1 * beta2)
-```{r}
 # Extract quantities of interest
 bootstrap_estimates = 
   bootstrap_results |> 
   mutate(
-    r_squared = map_dbl(glance_results, ~pull(.x, r.squared)),
-    beta1 = map_dbl(tidy_results, ~filter(.x, term == "tmin") |> pull(estimate)),
-    beta2 = map_dbl(tidy_results, ~filter(.x, term == "prcp") |> pull(estimate)),
+    r_squared = map_dbl(glance_results, \(x) pull(x, r.squared)),
+    beta1 = map_dbl(tidy_results, \(x) filter(x, term == "tmin") |> pull(estimate)),
+    beta2 = map_dbl(tidy_results, \(x) filter(x, term == "prcp") |> pull(estimate)),
     log_beta_product = log(beta1 * beta2)
   ) |> 
   select(bootstrap_id, r_squared, log_beta_product)
@@ -183,7 +165,7 @@ bootstrap_estimates =
 
 ### Distribution plots
 ```{r}
-# Plot r-squared distribution
+#r-squared distribution
 bootstrap_estimates |> 
   ggplot(aes(x = r_squared)) +
   geom_density(fill = "lightblue", alpha = 0.5) +
@@ -193,11 +175,11 @@ bootstrap_estimates |>
     y = "Density"
   )
 
-# Plot log(beta1 * beta2) distribution
+#log(beta1 * beta2) distribution
 bootstrap_estimates |> 
   drop_na(log_beta_product) |> 
   ggplot(aes(x = log_beta_product)) +
-  geom_density(fill = "lightgreen", alpha = 0.5) +
+  geom_density(fill = "pink", alpha = 0.5) +
   labs(
     title = "Distribution of log(β₁ × β₂)",
     x = "log(β₁ × β₂)",
@@ -207,11 +189,11 @@ bootstrap_estimates |>
 
 ### 95% confidence intervals
 ```{r}
-# Calculate CIs
+#Calculate CI
 ci_r_squared = quantile(bootstrap_estimates$r_squared, c(0.025, 0.975))
 ci_log_beta = quantile(bootstrap_estimates$log_beta_product, c(0.025, 0.975), na.rm = TRUE)
 
-# Display results
+#result
 tibble(
   Quantity = c("R-squared", "log(β₁ × β₂)"),
   CI_Lower = c(ci_r_squared[1], ci_log_beta[1]),
@@ -222,14 +204,13 @@ tibble(
 
 The $\hat{r}^2$ distribution is approximately normal with mean `r mean(bootstrap_estimates$r_squared) |> round(3)` and 95% CI (`r ci_r_squared[1] |> round(3)`, `r ci_r_squared[2] |> round(3)`). The $\log(\hat{\beta}_1 \times \hat{\beta}_2)$ distribution is left-skewed with `r sum(is.na(bootstrap_estimates$log_beta_product))` NA values due to negative products, and 95% CI (`r ci_log_beta[1] |> round(3)`, `r ci_log_beta[2] |> round(3)`).
 
-
 ## Problem 3
 
 ### Load and clean birthweight data
 ```{r}
-# Read birthweight data
+#Read data
 birthweight_df = 
-  read_csv("birthweight.csv") |> 
+  read_csv("data/birthweight.csv") |> 
   janitor::clean_names() |> 
   mutate(
     babysex = factor(babysex, levels = c(1, 2), labels = c("male", "female")),
@@ -240,26 +221,26 @@ birthweight_df =
     malform = factor(malform, levels = c(0, 1), labels = c("absent", "present"))
   )
 
-# Check for missing data
+#Check missing data
 birthweight_df |> 
-  summarize(across(everything(), ~sum(is.na(.))))
+  summarize(across(everything(), \(x) sum(is.na(x))))
 ```
 
 ### Propose my regression model
 
 I propose a model based on biological and health-related factors that are hypothesized to influence birthweight:
 
-- `gaweeks`: gestational age (more weeks = higher birthweight)
-- `bhead`, `blength`: physical measurements at birth (directly related to size/weight)
-- `delwt`, `wtgain`: mother's weight and weight gain (nutritional factors)
-- `smoken`: smoking during pregnancy (known risk factor)
-- `mrace`: mother's race (potential biological/environmental differences)
+1. `gaweeks`: gestational age (more weeks = higher birthweight)
+2. `bhead`, `blength`: physical measurements at birth (directly related to size/weight)
+3. `delwt`, `wtgain`: mother's weight and weight gain (nutritional factors)
+4. `smoken`: smoking during pregnancy (known risk factor)
+5. `mrace`: mother's race (potential biological/environmental differences)
 ```{r}
-# Fit my proposed model
+#Fit model
 my_model = lm(bwt ~ gaweeks + bhead + blength + delwt + wtgain + smoken + mrace, 
               data = birthweight_df)
 
-# Show model summary
+#model summary
 my_model |> 
   broom::tidy() |> 
   knitr::kable(digits = 3)
@@ -281,21 +262,17 @@ birthweight_df |>
   )
 ```
 
-The residual plot shows relatively random scatter around zero, though there are some outliers with large negative residuals (underpredicted birthweights).
+Residual plot shows relatively random scatter around zero, although there are some outliers with large negative residuals maybe the underpredicted birthweights.
 
 ### Compare models using cross-validation
 ```{r}
-# Create cross-validation dataframe
+#Create cross-validation dataframe and fit model
 cv_df = 
   crossv_mc(birthweight_df, n = 100) |> 
   mutate(
     train = map(train, as_tibble),
     test = map(test, as_tibble)
-  )
-
-# Fit models and calculate RMSE
-cv_df = 
-  cv_df |> 
+  ) |> 
   mutate(
     my_model = map(train, \(df) lm(bwt ~ gaweeks + bhead + blength + delwt + wtgain + smoken + mrace, data = df)),
     main_effects = map(train, \(df) lm(bwt ~ blength + gaweeks, data = df)),
@@ -310,7 +287,7 @@ cv_df =
 
 ### Plot RMSE comparison
 ```{r}
-# Compare models
+#Compare model
 cv_df |> 
   select(starts_with("rmse")) |> 
   pivot_longer(
